@@ -39,13 +39,15 @@ type SyncCommand struct {
 	ChangeEvent
 	Provider
 	ObjectMapping
+	ConnectionId
 }
 
-func NewSyncCommand(changeEvent ChangeEvent, provider Provider, mapping ObjectMapping) SyncCommand {
+func NewSyncCommand(changeEvent ChangeEvent, provider Provider, mapping ObjectMapping, connectionId ConnectionId) SyncCommand {
 	return SyncCommand{
 		ChangeEvent:   changeEvent,
 		Provider:      provider,
 		ObjectMapping: mapping,
+		ConnectionId: connectionId,
 	}
 }
 

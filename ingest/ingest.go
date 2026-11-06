@@ -47,7 +47,7 @@ func (in *Ingester) process(ev model.ChangeEvent) ([]model.SyncCommand, error) {
 	var result []model.SyncCommand
 	for _, conn := range in.connections[ev.TenantId] {
 		for _, mapping := range conn.Mappings {
-			result = append(result, model.NewSyncCommand(ev, conn.Provider, mapping))
+			result = append(result, model.NewSyncCommand(ev, conn.Provider, mapping, conn.Id))
 		}
 	}
 	if len(result) > 0 && ev.After != nil {

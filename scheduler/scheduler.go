@@ -17,15 +17,15 @@ type Limiter interface {
 	Allow(now time.Time) bool
 }
 
-type Deliver func(ctx context.Context, connection model.Connection, es model.ExternalSync) error
+type Deliver func(ctx context.Context, connection *model.Connection, es model.ExternalSync) error
 
 type Connection struct {
-	connection model.Connection
+	connection *model.Connection
 	limiter    Limiter
 }
 
-func NewConnection(connection model.Connection, limiter Limiter) Connection {
-	return Connection{
+func NewConnection(connection *model.Connection, limiter Limiter) *Connection {
+	return &Connection{
 		connection: connection,
 		limiter:    limiter,
 	}
@@ -33,39 +33,33 @@ func NewConnection(connection model.Connection, limiter Limiter) Connection {
 
 type Scheduler struct {
 	queue       Queue
-	connections chan *Connection
+	connections []*Connection
 	deliver     Deliver
 	now         func() time.Time
-	workers     int
 }
 
-func New(queue Queue, connections []Connection, deliver Deliver, now func() time.Time, workers int) *Scheduler {
-	s := &Scheduler{
+func New(queue Queue, connections []*Connection, deliver Deliver, now func() time.Time) *Scheduler {
+	return &Scheduler{
 		queue:   queue,
 		deliver: deliver,
 		now:     now,
-		connections: make(chan *Connection, len(connections)),
-		workers: workers,
+		connections: connections,
 	}
-	for i := range connections {
-		s.connections <- &connections[i]
-	}
-	return s
 }
 
 func (s *Scheduler) Run(ctx context.Context, tick time.Duration) {
 	var wg sync.WaitGroup
-	for range s.workers {
+	for _, connection := range s.connections {
 		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			s.work(ctx, tick)
+				defer wg.Done()
+				s.work(ctx, connection, tick)
 		}()
 	}
 	wg.Wait()
 }
 
-func (s *Scheduler) work(ctx context.Context, tick time.Duration) {
+func (s *Scheduler) work(ctx context.Context, connection *Connection, tick time.Duration) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
@@ -73,11 +67,6 @@ func (s *Scheduler) work(ctx context.Context, tick time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-
-		case connection, ok := <-s.connections:
-			if !ok {
-				return
-			}
 			if s.queue.HasPending(connection.connection.Id) && connection.limiter.Allow(s.now()) {
 				work, ok := s.queue.Dequeue(connection.connection.Id)
 				if ok {
@@ -86,11 +75,6 @@ func (s *Scheduler) work(ctx context.Context, tick time.Duration) {
 						s.queue.Requeue(work)
 					}
 				}
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case s.connections <- connection:
 			}
 		}
 	}

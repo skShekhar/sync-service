@@ -48,24 +48,29 @@ func (tf *Transformer) Run(ctx context.Context, cmds <-chan model.SyncCommand) {
 
 func (tf *Transformer) transform(cmd model.SyncCommand) (model.ExternalSync, bool, error) {
 	if cmd.Action() == model.DeleteAction {
-		return model.ExternalSync{}, true, nil
+		return model.NewExternalSync(
+        cmd.Action(),
+        cmd.ConnectionId,
+        cmd.ChangeEvent.RecordId,
+        cmd.ObjectMapping.InternalObjType,
+        cmd.ObjectMapping.ExternalObjType,
+        nil,
+    ), true, nil
 	}
 	afterRecord := toExternalRecord(cmd.FieldsMapping, cmd.After)
-	var payload model.ExternalRecord
+	payload := afterRecord
 	if cmd.Action() == model.UpdateAction {
-		payload := diff(toExternalRecord(cmd.FieldsMapping, cmd.Before), afterRecord)
+		payload = diff(toExternalRecord(cmd.FieldsMapping, cmd.Before), afterRecord)
 		if len(payload) == 0 {
 			return model.ExternalSync{}, false, nil
 		}
 	}
-	err := tf.providerSchemas[cmd.Provider][cmd.ExternalObjType].Validate(map[string]any(cmd.After))
+	err := tf.providerSchemas[cmd.Provider][cmd.ExternalObjType].Validate(map[string]any(payload))
 	if err != nil {
 		return model.ExternalSync{}, false, err
 	}
-	return model.ExternalSync{
-		Action:  cmd.Action(),
-		Payload: payload,
-	}, true, nil
+	sync := model.NewExternalSync(cmd.Action(), cmd.ConnectionId, cmd.ChangeEvent.RecordId, cmd.ObjectMapping.InternalObjType, cmd.ObjectMapping.ExternalObjType, payload)
+	return sync, true, nil
 }
 
 func toExternalRecord(fieldsMapping model.FieldsMapping, record model.InternalRecord) model.ExternalRecord {

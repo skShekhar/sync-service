@@ -2,6 +2,9 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"sort"
 	"sync"
 	"sync-service/delivery"
 	"sync-service/idmap"
@@ -11,7 +14,6 @@ import (
 	"sync-service/transform"
 	"testing"
 	"time"
-
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -24,7 +26,8 @@ func TestPipelineE2E(t *testing.T) {
 	ingester, connections := buildIngester(t, cmds)
 	queue := scheduler.NewInMemoryQueue()
 	transformer := buildTransformer(t, queue)
-	scheduler := buildScheduler(connections, queue)
+	delivered := make(chan deliveryCall, 8)
+	scheduler := buildScheduler(connections, queue, delivered)
 
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,32 +44,22 @@ func TestPipelineE2E(t *testing.T) {
 		}()
 	}
 
-	john := model.InternalRecord{"email": "john@gmail.com", "name": "John"}
-	doe := model.InternalRecord{"email": "doe@gmail.com", "name": "Doe"}
-	sam := model.InternalRecord{"email": "sam@gmail.com", "name": "Sam"}
+	john := model.InternalRecord{"internal_email": "john@gmail.com", "internal_name": "John"}
+	doe := model.InternalRecord{"internal_email": "doe@gmail.com", "internal_name": "Doe"}
+	sam := model.InternalRecord{"internal_email": "sam@gmail.com", "internal_name": "Sam"}
 
-	for _, e := range []model.ChangeEvent{
+	changeEvents := []model.ChangeEvent{
 		{ RecordId: "record_id_1", After: john},
 		{ RecordId: "record_id_1", Before: john, After: doe},
 		{ RecordId: "record_id_2", Before: john},
-		{ RecordId: "record_id_2", Before: sam},
-	} {
+		{ RecordId: "record_id_2", After: sam},
+	}
+	for _, e := range changeEvents {
 		e.TenantId = TenantId
 		e.InternalObjType = InternalContactObject
 		events <-e
 	}
-
-	cancel()
-	stopped := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(stopped)
-	}()
-	select{
-	case <-stopped:
-	case <-time.After(5*time.Second):
-		t.Fatal("test didn't complete in 5 second")	
-	}
+	assertDeliveries(t, delivered)
 }
 
 func buildTransformer(t *testing.T, sink transform.Sink) *transform.Transformer {
@@ -96,19 +89,19 @@ func buildIngester(t *testing.T, cmds chan<- model.SyncCommand) (*ingest.Ingeste
 	), []model.Connection{hsConnection, sfConnection}
 }
 
-func buildScheduler(connections []model.Connection, queue scheduler.Queue) *scheduler.Scheduler {
+func buildScheduler(connections []model.Connection, queue scheduler.Queue, delivered chan <-deliveryCall) *scheduler.Scheduler {
 	limiter := scheduler.NewTokenBucket(100, 10, time.Now())
-	configs := make([]scheduler.Connection, len(connections))
+	configs := make([]*scheduler.Connection, len(connections))
 	for i, c := range connections {
-		configs[i] = scheduler.NewConnection(c, limiter)
+		configs[i] = scheduler.NewConnection(&c, limiter)
 	}
 	adpaters := map[model.Provider]delivery.Adapter{
-		hubSpotProvider:    &noOpAdapter{},
-		salesforceProvider: &noOpAdapter{},
+		hubSpotProvider:    &noOpAdapter{delivered: delivered},
+		salesforceProvider: &noOpAdapter{delivered: delivered},
 	}
 	idMap := idmap.New()
 	deliverer := delivery.New(adpaters, idMap)
-	return scheduler.New(queue, configs, deliverer.Deliver, time.Now, 5)
+	return scheduler.New(queue, configs, deliverer.Deliver, time.Now)
 }
 
 func getInternalSchema(t *testing.T, fields ...any) *jsonschema.Schema {
@@ -126,4 +119,83 @@ func getInternalSchema(t *testing.T, fields ...any) *jsonschema.Schema {
 		t.Fatal(err)
 	}
 	return schema
+}
+
+func assertDeliveries(t *testing.T, delivered chan deliveryCall) {
+	expected := []deliveryCall{
+    {
+        Action: model.CreateAction,
+        Object: hubspotContactObject,
+        Record: model.ExternalRecord{
+            "hs_email": "john@gmail.com",
+						"hs_name": "John",
+        },
+    },
+    {
+        Action: model.UpdateAction,
+        Object: hubspotContactObject,
+        Record: model.ExternalRecord{
+            "hs_email": "doe@gmail.com",
+						"hs_name": "Doe",
+        },
+    },
+    {
+        Action: model.DeleteAction,
+        Object: hubspotContactObject,
+    },
+    {
+        Action: model.CreateAction,
+        Object: hubspotContactObject,
+        Record: model.ExternalRecord{
+            "hs_email": "sam@gmail.com",
+						"hs_name": "Sam",
+        },
+    },
+		{
+        Action: model.CreateAction,
+        Object: salesforceContactObject,
+        Record: model.ExternalRecord{
+            "sf_email": "john@gmail.com",
+						"sf_name": "John",
+        },
+    },
+		{
+        Action: model.UpdateAction,
+        Object: salesforceContactObject,
+        Record: model.ExternalRecord{
+            "sf_email": "doe@gmail.com",
+						"sf_name": "Doe",
+        },
+    },
+		{
+        Action: model.DeleteAction,
+        Object: salesforceContactObject,
+    },
+		{
+        Action: model.CreateAction,
+        Object: salesforceContactObject,
+        Record: model.ExternalRecord{
+            "sf_email": "sam@gmail.com",
+						"sf_name": "Sam",
+        },
+    },
+	}
+	got := make([]deliveryCall, 0, len(expected))
+	for i := 0; i < len(expected); i++ {
+		select {
+		case call := <-delivered:
+			got = append(got, call)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("expected %d deliveries, got %d, %v", len(expected), len(got), got)
+		}
+	}
+	sort.Slice(got, func(i, j int) bool {
+			return fmt.Sprintf("%+v", got[i]) < fmt.Sprintf("%+v", got[j])
+	})
+	sort.Slice(expected, func(i, j int) bool {
+			return fmt.Sprintf("%+v", expected[i]) < fmt.Sprintf("%+v", expected[j])
+	})
+	if !reflect.DeepEqual(expected, got) {
+    t.Errorf("deliveries mismatch: want: %+v\ngot:  %+v", expected, got)
+	}
 }

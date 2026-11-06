@@ -29,18 +29,16 @@ func New(adapters map[model.Provider]Adapter, idStore IdStore) *Deliverer {
 	}
 }
 
-func (d *Deliverer) Deliver(ctx context.Context, connection model.Connection, es model.ExternalSync) error {
+func (d *Deliverer) Deliver(ctx context.Context, connection *model.Connection, es model.ExternalSync) error {
 	adapter := d.adapters[connection.Provider]
-	externalId, mapped := d.idStore.Get(es)
+	externalId, _ := d.idStore.Get(es)
 	if es.Action == model.DeleteAction {
-		if mapped {
-			err := adapter.Delete(ctx, es.ExternalObjType, externalId)
-			if err != nil {
-				return err
-			}
-			d.idStore.Remove(es)
-			return nil
+		err := adapter.Delete(ctx, es.ExternalObjType, externalId)
+		if err != nil {
+			return err
 		}
+		d.idStore.Remove(es)
+		return nil
 	}
 	if es.Action == model.UpdateAction {
 		return adapter.Update(ctx, es.ExternalObjType, es.Payload, externalId)

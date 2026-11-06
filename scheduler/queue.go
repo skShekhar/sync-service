@@ -22,10 +22,10 @@ func (q *InMemoryQueue) Put(es model.ExternalSync) {
 	q.items[es.ConnectionId] = append(q.items[es.ConnectionId], es)
 }
 
-func (q *InMemoryQueue) HasPending(connectionID model.ConnectionId) bool {
+func (q *InMemoryQueue) HasPending(connectionId model.ConnectionId) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.items[connectionID]) > 0
+	return len(q.items[connectionId]) > 0
 }
 
 func (q *InMemoryQueue) Dequeue(connectionID model.ConnectionId) (model.ExternalSync, bool) {
